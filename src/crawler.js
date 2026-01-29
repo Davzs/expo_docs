@@ -141,6 +141,23 @@ class DocsCrawler {
                 return false;
             }
 
+            // Must match the path prefix from start URL
+            // e.g., if startUrl is /docs/, only crawl URLs under /docs/
+            const startPath = startUrlObj.pathname;
+            if (startPath && startPath !== '/') {
+                // Normalize paths for comparison
+                const normalizedStartPath = startPath.endsWith('/') ? startPath : startPath + '/';
+                const urlPath = urlObj.pathname;
+                const normalizedUrlPath = urlPath.endsWith('/') ? urlPath : urlPath + '/';
+                
+                // URL must start with the same path prefix OR be exactly the start path
+                if (!normalizedUrlPath.startsWith(normalizedStartPath) && 
+                    urlPath !== startPath && 
+                    normalizedUrlPath !== normalizedStartPath) {
+                    return false;
+                }
+            }
+
             // Remove hash from URL for comparison
             const cleanUrl = url.split('#')[0];
             if (this.visitedUrls.has(cleanUrl)) {
