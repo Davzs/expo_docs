@@ -1,17 +1,36 @@
 {
-  "name": "docs-to-pdf",
-  "version": "1.0.0",
-  "main": "docs-crawler.js",
+  "name": "docs-to-md",
+  "version": "2.0.0",
+  "description": "AI-ready documentation crawler - converts any website's documentation into clean, structured markdown files optimized for LLM consumption",
+  "main": "src/index.js",
+  "bin": {
+    "docs-to-md": "src/cli.js"
+  },
   "scripts": {
+    "crawl": "node src/cli.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["documentation", "pdf", "crawler", "scraper", "puppeteer", "docs"],
+  "keywords": [
+    "documentation",
+    "markdown",
+    "crawler",
+    "scraper",
+    "puppeteer",
+    "ai",
+    "llm",
+    "rag",
+    "context",
+    "docs"
+  ],
   "author": "",
   "license": "MIT",
-  "description": "A flexible documentation crawler that converts any website's documentation into a comprehensive PDF file",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "dependencies": {
-    "pdf-lib": "^1.17.1",
     "puppeteer": "^24.9.0",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2",
     "yargs": "^18.0.0"
   }
 }

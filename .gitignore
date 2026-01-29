@@ -1,7 +1,10 @@
 # Node modules
 node_modules/
 
-# Generated PDFs
+# Generated output (crawled documentation)
+*-docs/
+*-docs.md
+output/
 *.pdf
 
 # Temporary files
@@ -23,3 +26,7 @@ npm-debug.log*
 .env
 .env.local
 .env.production
+
+# Legacy/deprecated files (v1 PDF approach)
+# docs-crawler.js
+# merge-pdfs.js
