@@ -33,9 +33,14 @@ class DocsCrawler {
         this.includePatterns = options.include || [];
         this.excludePatterns = options.exclude || [];
         this.selector = options.selector || 'main, article, .content, .documentation, .docs-content, [role="main"], body';
-        this.waitTime = options.wait ?? 1000;
-        this.concurrency = options.concurrency ?? 3;
+        this.waitTime = options.wait ?? 200; // Reduced default from 1000ms to 200ms
+        this.concurrency = options.concurrency ?? 5; // Increased default from 3 to 5
         this.verbose = options.verbose ?? false;
+        
+        // Incremental save callback - called after each page
+        this.onPageCrawled = options.onPageCrawled || null;
+        // Save interval for auto-saving (pages)
+        this.saveInterval = options.saveInterval ?? 25;
 
         this.visitedUrls = new Set();
         this.urlQueue = [];
@@ -43,6 +48,8 @@ class DocsCrawler {
         this.results = [];
         this.errors = [];
         this.browser = null;
+        this.activePages = 0;
+        this.processingUrls = new Set(); // Track URLs currently being processed
 
         this.turndown = this.initTurndown();
     }
@@ -293,6 +300,11 @@ class DocsCrawler {
      */
     async extractContent(page) {
         const html = await page.evaluate((selector) => {
+            // Safety check for document.body
+            if (!document.body) {
+                return '<p>Page content not available</p>';
+            }
+            
             // Remove unwanted elements before extraction
             const unwantedSelectors = [
                 'nav', 'header', 'footer', 'aside',
@@ -308,21 +320,34 @@ class DocsCrawler {
             ];
 
             unwantedSelectors.forEach(sel => {
-                document.querySelectorAll(sel).forEach(el => el.remove());
+                try {
+                    document.querySelectorAll(sel).forEach(el => el.remove());
+                } catch (e) {
+                    // Ignore selector errors
+                }
             });
 
             // Find main content
             const selectors = selector.split(',').map(s => s.trim());
             for (const sel of selectors) {
-                const content = document.querySelector(sel);
-                if (content && content.textContent.trim().length > 100) {
-                    return content.innerHTML;
+                try {
+                    const content = document.querySelector(sel);
+                    if (content && content.innerHTML && content.textContent.trim().length > 100) {
+                        return content.innerHTML;
+                    }
+                } catch (e) {
+                    // Ignore selector errors
                 }
             }
 
             // Fallback to body
-            return document.body.innerHTML;
+            return document.body?.innerHTML || '<p>No content found</p>';
         }, this.selector);
+
+        // Safety check for null/undefined html
+        if (!html) {
+            return 'No content available';
+        }
 
         // Convert HTML to Markdown
         let markdown = this.turndown.turndown(html);
@@ -497,8 +522,8 @@ class DocsCrawler {
                 this.log(`  Primary selector not found, using fallback`);
             });
 
-            // Extended delay for JavaScript-rendered navigation
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Brief delay for JavaScript-rendered navigation (reduced from 1000ms)
+            await new Promise(resolve => setTimeout(resolve, 300));
 
             // IMPORTANT: Extract links FIRST before content extraction modifies DOM
             const links = await this.extractLinks(page);
@@ -585,39 +610,90 @@ class DocsCrawler {
         }
 
         console.log(`  📋 Initial queue: ${this.urlQueue.length} URLs`);
+        console.log(`  🚀 Concurrency: ${this.concurrency} pages`);
         console.log('');
 
+        let pageCounter = 0;
+        let lastSaveCount = 0;
+
         try {
-            while (this.urlQueue.length > 0) {
-                const { url, depth } = this.urlQueue.shift();
-
-                // Skip if already visited or exceeds depth
-                const cleanUrl = url.split('#')[0];
-                if (this.visitedUrls.has(cleanUrl) || depth > this.maxDepth) {
-                    continue;
-                }
-
-                this.visitedUrls.add(cleanUrl);
-
-                console.log(`[${this.results.length + 1}] [Depth ${depth}] ${url}`);
-
-                const page = await this.browser.newPage();
-                await page.setViewport({ width: 1280, height: 800 });
-
-                try {
-                    const result = await this.processPage(page, url, depth);
-                    if (result) {
-                        this.results.push(result);
-                        console.log(`  ✓ ${result.metadata.title} (${result.linksFound} links)`);
+            // Process pages concurrently
+            const processNextBatch = async () => {
+                const batch = [];
+                
+                // Get next batch of URLs to process
+                while (batch.length < this.concurrency && this.urlQueue.length > 0) {
+                    const item = this.urlQueue.shift();
+                    if (!item) break;
+                    
+                    const { url, depth } = item;
+                    const cleanUrl = url.split('#')[0];
+                    
+                    // Skip if already visited, being processed, or exceeds depth
+                    if (this.visitedUrls.has(cleanUrl) || 
+                        this.processingUrls.has(cleanUrl) || 
+                        depth > this.maxDepth) {
+                        continue;
                     }
-                } finally {
-                    await page.close();
+                    
+                    this.visitedUrls.add(cleanUrl);
+                    this.processingUrls.add(cleanUrl);
+                    batch.push({ url, depth, cleanUrl });
                 }
-
-                // Rate limiting
+                
+                if (batch.length === 0) return;
+                
+                // Process batch concurrently
+                const promises = batch.map(async ({ url, depth, cleanUrl }) => {
+                    pageCounter++;
+                    const pageNum = pageCounter;
+                    console.log(`[${pageNum}] [Depth ${depth}] ${url}`);
+                    
+                    const page = await this.browser.newPage();
+                    await page.setViewport({ width: 1280, height: 800 });
+                    
+                    try {
+                        const result = await this.processPage(page, url, depth);
+                        if (result) {
+                            this.results.push(result);
+                            console.log(`  ✓ ${result.metadata.title} (${result.linksFound} links)`);
+                            
+                            // Call incremental save callback if provided
+                            if (this.onPageCrawled) {
+                                try {
+                                    await this.onPageCrawled(result, this.results.length);
+                                } catch (e) {
+                                    this.log(`  Warning: Save callback failed: ${e.message}`);
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.error(`  ✗ Error processing ${url}: ${error.message}`);
+                    } finally {
+                        await page.close();
+                        this.processingUrls.delete(cleanUrl);
+                    }
+                });
+                
+                await Promise.all(promises);
+                
+                // Log progress periodically
+                if (this.results.length - lastSaveCount >= this.saveInterval) {
+                    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+                    const rate = (this.results.length / elapsed).toFixed(1);
+                    console.log(`\n📊 Progress: ${this.results.length} pages crawled (${rate} pages/sec), ${this.urlQueue.length} queued\n`);
+                    lastSaveCount = this.results.length;
+                }
+                
+                // Brief rate limiting between batches
                 if (this.waitTime > 0 && this.urlQueue.length > 0) {
                     await new Promise(resolve => setTimeout(resolve, this.waitTime));
                 }
+            };
+            
+            // Keep processing until queue is empty
+            while (this.urlQueue.length > 0 || this.processingUrls.size > 0) {
+                await processNextBatch();
             }
         } finally {
             await this.browser.close();
